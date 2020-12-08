@@ -1,8 +1,10 @@
 from flask import Flask, request, make_response
 import string
 from pony.flask import Pony
-from pony.orm import Required, Database
+from pony.orm import Required, Database, Optional
 from Crypto.Protocol.KDF import bcrypt, bcrypt_check
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 
 app = Flask(__name__)
@@ -21,9 +23,11 @@ Pony(app)
 class User(db.Entity):
   login = Required(str, unique=True)
   password = Required(str)
+  dek = Optional(bytes)
+  dek_nonce = Optional(bytes)
+  data = Optional(bytes)
+  data_nonce = Optional(bytes)
 
-  def __repr__(self) -> str:
-    return f'<User login={self.login} password={self.password}>'
 
 db.bind(**app.config['PONY'])
 db.generate_mapping(create_tables=True)
@@ -40,12 +44,32 @@ def check_password(*, raw, encrypted):
   except:
     return False
 
+_KEK = None
+def get_kek() -> bytes:
+  global _KEK
+  if _KEK is None:
+    with open('kek.txt', 'rb') as f:
+      _KEK = f.read()
+  return _KEK
 
-def get_auth_page(name):
+
+def decrypt(*, key: bytes, encrypted: bytes, nonce: bytes) -> bytes:
+  return AES.new(key, AES.MODE_GCM, nonce=nonce).decrypt(encrypted)
+
+
+def encrypt(*, key: bytes, data: bytes):
+  aes = AES.new(key, AES.MODE_GCM)
+  return aes.encrypt(data), aes.nonce
+
+
+def get_auth_page(name, write=False):
+  write_field = '<input type="text" name="data" placeholder="Sensitive data" />'
+
   return f'''
 <form method="post" action="">
   <input type="text" name="login" placeholder="Login" required />
   <input type="password" name="password" placeholder="Password" required />
+  {write_field if write else ''}
   <input type="submit" value="{name}" />
 </form>
 '''
@@ -69,26 +93,62 @@ def validate_password(password):
 
 @app.route('/')
 def home():
-  return '<a href="/login">Login</a><br /><a href="/register">Register</a>'
+  return '''<a href="/read">Read sensitive data</a>
+  <br />
+  <a href="/write">Write sensitive data</a>
+  <br />
+  <a href="/register">Register</a>
+  '''
 
 
-@app.route('/login', methods=['GET'])
-def login_page():
+@app.route('/read', methods=['GET'])
+def read_page():
   return get_auth_page('Login')
 
 
-@app.route('/login', methods=['POST'])
-def login_user():
+@app.route('/read', methods=['POST'])
+def read_data():
   login, password = request.form['login'], request.form['password']
 
   validation = validate_password(password)
   if validation:
     return make_response(validation, 403)
 
-  user = User.get(login=login)
+  user: User = User.get(login=login)
   if not user or not check_password(raw=password, encrypted=user.password):
     return make_response('Login and/or password is invalid', 403)
 
+  if user.data is None:
+    return 'No data is available'
+
+  dek = decrypt(key=get_kek(), encrypted=user.dek, nonce=user.dek_nonce)
+  return decrypt(key=dek, encrypted=user.data, nonce=user.data_nonce).decode('utf-8')
+
+
+@app.route('/write', methods=['GET'])
+def write_page():
+  return get_auth_page('Login', write=True)
+
+
+@app.route('/write', methods=['POST'])
+def write_data():
+  login, password = request.form['login'], request.form['password']
+  data: bytes = request.form['data'].encode('utf-8')
+
+  validation = validate_password(password)
+  if validation:
+    return make_response(validation, 403)
+
+  user: User = User.get(login=login)
+  if not user or not check_password(raw=password, encrypted=user.password):
+    return make_response('Login and/or password is invalid', 403)
+
+  if len(data) > 255:
+    return 'Data is too long (must be at most 255 ascii letters)'
+
+  dek = get_random_bytes(32)
+  user.dek, user.dek_nonce = encrypt(key=get_kek(), data=dek)
+  user.data, user.data_nonce = encrypt(key=dek, data=data)
   return 'Success'
 
 
