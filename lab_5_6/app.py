@@ -5,12 +5,13 @@ from pony.orm import Required, Database, Optional
 from Crypto.Protocol.KDF import bcrypt, bcrypt_check
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+import ssl
 
 
 app = Flask(__name__)
 app.config['PONY'] = {
   'provider': 'mysql',
-  'host': 'localhost',
+  'host': '127.0.0.1',
   'user': 'vasniktel',
   'passwd': 'vasniktel',
   'db': 'crypto_lab_5'
@@ -27,10 +28,6 @@ class User(db.Entity):
   dek_nonce = Optional(bytes)
   data = Optional(bytes)
   data_nonce = Optional(bytes)
-
-
-db.bind(**app.config['PONY'])
-db.generate_mapping(create_tables=True)
 
 
 def encrypt_password(password):
@@ -170,3 +167,19 @@ def register_user():
 
   User(login=login, password=encrypt_password(password))
   return 'Success'
+
+
+db.bind(**app.config['PONY'])
+db.generate_mapping(create_tables=True)
+
+if __name__ == '__main__':
+  context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+  context.load_dh_params('dhparams.pem')
+  ciphersuite = (
+    'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256'
+    ':DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256'
+    ':!aNULL:!eNULL:!LOW:!3DES:!MD5:!EXP:!PSK:!DSS:!RC4:!SEED:!ECDSA:!ADH:!IDEA:!3DES'
+  )
+  context.set_ciphers(ciphersuite)
+  context.load_cert_chain('cert.pem', 'key.pem')
+  app.run(ssl_context=context)
